@@ -57,6 +57,10 @@ struct FoveatedDebug : Feature
 	void DrawSettings() override;
 	void ClearShaderCache() override;
 
+	void Prepass() override;       
+	void Draw();                   
+	void UpdateConstantBuffers();  
+
 	void SaveSettings(json& o_json) override;
 	void LoadSettings(json& o_json) override;
 	void RestoreDefaultSettings() override;

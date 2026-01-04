@@ -371,3 +371,143 @@ void FoveatedDebug::DrawSettings()
 		}
 	}
 }
+
+void FoveatedDebug::UpdateConstantBuffers()
+{
+	if (!foveatedBuffer || !settingsBuffer)
+		return;
+
+	auto context = globals::d3d::context;
+
+	// Update foveated region data
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (SUCCEEDED(context->Map(foveatedBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+		memcpy(mapped.pData, &regionData, sizeof(FoveatedRegionData));
+		context->Unmap(foveatedBuffer.get(), 0);
+	}
+
+	// Update settings
+	if (SUCCEEDED(context->Map(settingsBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+		memcpy(mapped.pData, &settings, sizeof(Settings));
+		context->Unmap(settingsBuffer.get(), 0);
+	}
+}
+
+void FoveatedDebug::Draw()
+{
+	if (!settings.EnableDebug || !initialized) {
+		return;
+	}
+
+	if (!debugPS || !debugVS) {
+		logger::warn("FoveatedDebug::Draw() - Shaders not loaded");
+		return;
+	}
+
+	logger::info("FoveatedDebug::Draw() - Drawing overlay (EnableDebug={}, initialized={})",
+		settings.EnableDebug, initialized);
+
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+
+	// Get the main render target
+	auto mainTarget = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+
+	if (!mainTarget.RTV) {
+		logger::error("FoveatedDebug: Main render target not available");
+		return;
+	}
+
+	// Update gaze data
+	UpdateEyeGazeData();
+
+	// Update constant buffers
+	UpdateConstantBuffers();
+
+	// Save current render targets and viewport
+	ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
+	ID3D11DepthStencilView* oldDSV = nullptr;
+	context->OMGetRenderTargets(8, oldRTVs, &oldDSV);
+
+	D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+	UINT numViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+	context->RSGetViewports(&numViewports, oldViewports);
+
+	// Set our render target
+	auto rtv = mainTarget.RTV;
+	context->OMSetRenderTargets(1, &rtv, nullptr);
+
+	// Set viewport to full screen
+	D3D11_VIEWPORT viewport = {};
+	viewport.TopLeftX = 0;
+	viewport.TopLeftY = 0;
+
+	D3D11_TEXTURE2D_DESC texDesc;
+	mainTarget.texture->GetDesc(&texDesc);
+	viewport.Width = static_cast<float>(texDesc.Width);
+	viewport.Height = static_cast<float>(texDesc.Height);
+
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
+	context->RSSetViewports(1, &viewport);
+
+	// Save current state
+	ID3D11BlendState* oldBlendState = nullptr;
+	float oldBlendFactor[4];
+	UINT oldSampleMask;
+	context->OMGetBlendState(&oldBlendState, oldBlendFactor, &oldSampleMask);
+
+	// Set our blend state for transparency
+	float blendFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
+
+	// Bind constant buffers
+	auto foveatedCB = foveatedBuffer.get();
+	auto settingsCB = settingsBuffer.get();
+	context->PSSetConstantBuffers(10, 1, &foveatedCB);
+	context->PSSetConstantBuffers(11, 1, &settingsCB);
+
+	// Bind shaders
+	context->PSSetShader(reinterpret_cast<ID3D11PixelShader*>(debugPS->shader), nullptr, 0);
+	context->VSSetShader(reinterpret_cast<ID3D11VertexShader*>(debugVS->shader), nullptr, 0);
+
+	// Draw fullscreen triangle
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	context->IASetInputLayout(nullptr);
+	context->Draw(3, 0);
+
+	logger::info("FoveatedDebug: Draw call executed");
+
+	// Restore render targets and viewport
+	context->OMSetRenderTargets(8, oldRTVs, oldDSV);
+	context->RSSetViewports(numViewports, oldViewports);
+
+	// Release old RTVs
+	for (int i = 0; i < 8; i++) {
+		if (oldRTVs[i])
+			oldRTVs[i]->Release();
+	}
+	if (oldDSV)
+		oldDSV->Release();
+
+	// Restore old blend state
+	context->OMSetBlendState(oldBlendState, oldBlendFactor, oldSampleMask);
+	if (oldBlendState) {
+		oldBlendState->Release();
+	}
+
+	// Unbind shaders
+	context->PSSetShader(nullptr, nullptr, 0);
+	context->VSSetShader(nullptr, nullptr, 0);
+
+	// Unbind constant buffers
+	ID3D11Buffer* nullBuffer = nullptr;
+	context->PSSetConstantBuffers(10, 1, &nullBuffer);
+	context->PSSetConstantBuffers(11, 1, &nullBuffer);
+}
+
+void FoveatedDebug::Prepass()
+{
+	// Draw the overlay during the prepass stage
+	Draw();
+}
