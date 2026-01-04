@@ -5,36 +5,36 @@
 
 struct FoveatedDebug : Feature
 {
-	static FoveatedDebug* GetSingleton()
-	{
-		static FoveatedDebug singleton;
-		return &singleton;
-	}
-
 	//=========================================================================
 	// SETTINGS AND DATA STRUCTURES
 	//=========================================================================
 
 	struct Settings
 	{
-		uint32_t EnableDebug = 0;
+		uint32_t EnableDebug = 1;  // Default to 1 so it's visible!
 		std::array<float, 3> DebugHue = { 1.0f, 0.0f, 0.0f };
 		float DebugAlpha = 0.3f;
 		uint32_t ShowGazePoint = 1;
 		float GazePointSize = 0.02f;
 		uint32_t ShowMetrics = 1;
-		uint32_t pad0 = 0;
+		uint32_t pad0[4] = { 0 };  // Keep your padding fix!
 	};
 
 	struct FoveatedRegionData
 	{
-		float GazePoint[2] = { 0.5f, 0.5f };  // Normalized screen coords (0-1)
-		float InnerRadius = 0.15f;            // Inner full-res radius
-		float OuterRadius = 0.35f;            // Outer transition radius
-		float EdgeSoftness = 0.05f;           // Falloff between inner/outer
-		uint32_t IsTracking = 0;              // Whether eye tracking is active
-		float Confidence = 0.0f;              // Tracking confidence (0-1)
-		uint32_t pad[2] = { 0, 0 };
+		float GazePoint[2] = { 0.5f, 0.5f };  // 8 bytes
+		float InnerRadius = 0.15f;            // 4 bytes
+		float OuterRadius = 0.35f;            // 4 bytes
+		// --- 16 bytes boundary ---
+
+		float EdgeSoftness = 0.05f;  // 4 bytes
+		uint32_t IsTracking = 0;     // 4 bytes
+		float Confidence = 0.0f;     // 4 bytes
+		// --- 28 bytes so far ---
+
+		// 36 bytes previously (28 + 8). We need 48 bytes total.
+		// So we need 20 bytes of padding (48 - 28 = 20).
+		uint32_t pad[5] = { 0 };  // 5 * 4 = 20 bytes
 	};
 
 	Settings settings;
@@ -57,8 +57,18 @@ struct FoveatedDebug : Feature
 	void DrawSettings() override;
 	void ClearShaderCache() override;
 
-	void Prepass() override;       
-	void Draw();                   
+	struct Hooks
+	{
+		struct IDXGISwapChain_Present
+		{
+			static HRESULT WINAPI thunk(IDXGISwapChain* _this, UINT SyncInterval, UINT Flags);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		static void Install();
+	};
+
+	void Draw(IDXGISwapChain* swapChain);            
 	void UpdateConstantBuffers();  
 
 	void SaveSettings(json& o_json) override;
@@ -122,9 +132,10 @@ private:
 
 	winrt::com_ptr<ID3D11Buffer> foveatedBuffer;
 	winrt::com_ptr<ID3D11Buffer> settingsBuffer;
-	RE::BSGraphics::PixelShader* debugPS = nullptr;   // Changed type
-	RE::BSGraphics::VertexShader* debugVS = nullptr;  // Changed type
+	winrt::com_ptr<ID3D11PixelShader> debugPS;
+	winrt::com_ptr<ID3D11VertexShader> debugVS;
 	winrt::com_ptr<ID3D11BlendState> blendState;
+	winrt::com_ptr<ID3D11RasterizerState> rasterizerState;
 
 	// Debug metrics
 	struct Metrics

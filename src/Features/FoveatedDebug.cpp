@@ -2,9 +2,16 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include <DirectXMath.h>
+#include "Globals.h"
 
 #define XR_USE_GRAPHICS_API_D3D11
 #include <openxr/openxr_platform.h>
+
+#include <d3dcompiler.h>
+#include <filesystem>
+#include <fstream>
+
+#pragma comment(lib, "d3dcompiler.lib")
 
 using namespace DirectX;
 
@@ -38,116 +45,113 @@ void FoveatedDebug::RestoreDefaultSettings()
 
 void FoveatedDebug::SetupResources()
 {
+	logger::info("FoveatedDebug::SetupResources called, isVR={}", globals::game::isVR);
+
 	if (!globals::game::isVR) {
-		logger::info("FoveatedDebug: Not in VR mode, skipping setup");
+		logger::info("FoveatedDebug: Skipping setup - not in VR mode");
 		return;
 	}
 
 	auto device = globals::d3d::device;
+	if (!device) {
+		logger::error("FoveatedDebug: D3D device is null!");
+		return;
+	}
 
-	// Create constant buffers
+	// 1. Create Constant Buffers (Keep your existing code for this)
 	D3D11_BUFFER_DESC bufferDesc = {};
 	bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
 	bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-	// Foveated region data buffer
-	bufferDesc.ByteWidth = sizeof(FoveatedRegionData);
-	if (FAILED(device->CreateBuffer(&bufferDesc, nullptr, foveatedBuffer.put()))) {
-		logger::error("FoveatedDebug: Failed to create foveated buffer");
-		return;
-	}
+	// Foveated Buffer
+	bufferDesc.ByteWidth = sizeof(FoveatedRegionData);  // 48 bytes
+	device->CreateBuffer(&bufferDesc, nullptr, foveatedBuffer.put());
 
-	// Settings buffer
-	bufferDesc.ByteWidth = sizeof(Settings);
-	if (FAILED(device->CreateBuffer(&bufferDesc, nullptr, settingsBuffer.put()))) {
-		logger::error("FoveatedDebug: Failed to create settings buffer");
-		return;
-	}
+	// Settings Buffer
+	bufferDesc.ByteWidth = sizeof(Settings);  // 48 bytes
+	device->CreateBuffer(&bufferDesc, nullptr, settingsBuffer.put());
 
-	// Create blend state for transparent overlay
+	// 2. Create Rasterizer State (NO CULLING)
+	// This ensures the triangle is drawn regardless of winding order
+	D3D11_RASTERIZER_DESC rasterDesc = {};
+	rasterDesc.FillMode = D3D11_FILL_SOLID;
+	rasterDesc.CullMode = D3D11_CULL_NONE;  // <--- Critical fix
+	rasterDesc.FrontCounterClockwise = FALSE;
+	rasterDesc.DepthClipEnable = TRUE;
+
+	device->CreateRasterizerState(&rasterDesc, rasterizerState.put());
+
+	// 3. Create Blend State (ALPHA BLENDING)
 	D3D11_BLEND_DESC blendDesc = {};
 	blendDesc.RenderTarget[0].BlendEnable = TRUE;
 	blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
 	blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
 	blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
 	blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-	blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+	blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
 	blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 	blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 
-	if (FAILED(device->CreateBlendState(&blendDesc, blendState.put()))) {
-		logger::error("FoveatedDebug: Failed to create blend state");
+	device->CreateBlendState(&blendDesc, blendState.put());
+
+	// 4. Compile Shaders
+	logger::info("FoveatedDebug: Buffers created, compiling shaders...");
+	ClearShaderCache();
+
+	// Check if shaders compiled
+	if (!debugPS || !debugVS) {
+		logger::error("FoveatedDebug: Shader compilation failed!");
+		// Don't set initialized - leave it false
 		return;
 	}
 
-	// Load shaders - defer until first use
-	// Shaders will be loaded in ClearShaderCache()
-
 	initialized = true;
-	logger::info("FoveatedDebug: Resources created successfully");
-}
-
-void FoveatedDebug::PostPostLoad()
-{
-	if (!globals::game::isVR)
-		return;
-
-	InitializeEyeTracking();
-}
-
-void FoveatedDebug::DataLoaded()
-{
-	// Additional initialization if needed
+	logger::info("FoveatedDebug: Resources setup complete.");
 }
 
 void FoveatedDebug::ClearShaderCache()
 {
 	logger::info("FoveatedDebug: Recompiling shaders...");
 
-	// Release old shaders if they exist
-	if (debugPS) {
-		debugPS = nullptr;
-	}
-	if (debugVS) {
-		debugVS = nullptr;
-	}
+	// Release old shaders
+	debugPS = nullptr;
+	debugVS = nullptr;
 
-	// Compile pixel shader with PIXEL_SHADER define
+	// Compile Pixel Shader using existing utility
 	std::vector<std::pair<const char*, const char*>> psDefines = {
-		{ "PIXEL_SHADER", "" },
-		{ "FOVEATED_DEBUG", "" }
+		{ "PIXEL_SHADER", "1" },
+		{ "FOVEATED_DEBUG", "1" }
 	};
 
 	auto compiledPS = Util::CompileShader(
-		L"Data\\Shaders\\FoveatedDebug\\FoveatedDebug.hlsl",  // Path with subdirectory
+		L"Data\\Shaders\\FoveatedDebug\\FoveatedDebug.hlsl",
 		psDefines,
 		"ps_5_0",
-		"main"  // Entry point name
-	);
+		"main");
 
 	if (compiledPS) {
-		debugPS = reinterpret_cast<RE::BSGraphics::PixelShader*>(compiledPS);
+		// attach() takes ownership of the raw pointer without AddRef
+		debugPS.attach(static_cast<ID3D11PixelShader*>(compiledPS));
 		logger::info("FoveatedDebug: Pixel shader compiled successfully");
 	} else {
 		logger::error("FoveatedDebug: Failed to compile pixel shader");
 	}
 
-	// Compile vertex shader with VERTEX_SHADER define
+	// Compile Vertex Shader
 	std::vector<std::pair<const char*, const char*>> vsDefines = {
-		{ "VERTEX_SHADER", "" },
-		{ "FOVEATED_DEBUG", "" }
+		{ "VERTEX_SHADER", "1" },
+		{ "FOVEATED_DEBUG", "1" }
 	};
 
 	auto compiledVS = Util::CompileShader(
-		L"Data\\Shaders\\FoveatedDebug\\FoveatedDebug.hlsl",  // Path with subdirectory
+		L"Data\\Shaders\\FoveatedDebug\\FoveatedDebug.hlsl",
 		vsDefines,
 		"vs_5_0",
-		"main"  // Entry point name
-	);
+		"main");
 
 	if (compiledVS) {
-		debugVS = reinterpret_cast<RE::BSGraphics::VertexShader*>(compiledVS);
+		debugVS.attach(static_cast<ID3D11VertexShader*>(compiledVS));
 		logger::info("FoveatedDebug: Vertex shader compiled successfully");
 	} else {
 		logger::error("FoveatedDebug: Failed to compile vertex shader");
@@ -393,121 +397,143 @@ void FoveatedDebug::UpdateConstantBuffers()
 	}
 }
 
-void FoveatedDebug::Draw()
+// 1. Update the Hook to pass the SwapChain
+HRESULT WINAPI FoveatedDebug::Hooks::IDXGISwapChain_Present::thunk(IDXGISwapChain* _this, UINT SyncInterval, UINT Flags)
 {
-	if (!settings.EnableDebug || !initialized) {
+	// Use the global instance, not a separate singleton
+	globals::features::foveatedDebug.Draw(_this);
+	return func(_this, SyncInterval, Flags);
+}
+
+// 2. Update the Draw function
+void FoveatedDebug::Draw(IDXGISwapChain* swapChain)
+{
+	// Add at the very start of Draw():
+	logger::info("FoveatedDebug::Draw called - EnableDebug={}, initialized={}, PS={}, VS={}",
+		settings.EnableDebug, initialized, (bool)debugPS, (bool)debugVS);
+
+	if (!settings.EnableDebug || !initialized || !debugPS || !debugVS || !swapChain) {
 		return;
 	}
-
-	if (!debugPS || !debugVS) {
-		logger::warn("FoveatedDebug::Draw() - Shaders not loaded");
-		return;
-	}
-
-	logger::info("FoveatedDebug::Draw() - Drawing overlay (EnableDebug={}, initialized={})",
-		settings.EnableDebug, initialized);
 
 	auto context = globals::d3d::context;
-	auto renderer = globals::game::renderer;
 
-	// Get the main render target
-	auto mainTarget = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-
-	if (!mainTarget.RTV) {
-		logger::error("FoveatedDebug: Main render target not available");
+	// --- NEW: Get BackBuffer RTV ---
+	winrt::com_ptr<ID3D11Texture2D> backBuffer;
+	if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), backBuffer.put_void()))) {
 		return;
 	}
 
-	// Update gaze data
-	UpdateEyeGazeData();
+	winrt::com_ptr<ID3D11RenderTargetView> backBufferRTV;
+	if (FAILED(globals::d3d::device->CreateRenderTargetView(backBuffer.get(), nullptr, backBufferRTV.put()))) {
+		return;
+	}
+	// -------------------------------
 
-	// Update constant buffers
+	// Update data (Eye Gaze / Constants)
+	UpdateEyeGazeData();
 	UpdateConstantBuffers();
 
-	// Save current render targets and viewport
+	// --- Save Old State ---
 	ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
 	ID3D11DepthStencilView* oldDSV = nullptr;
 	context->OMGetRenderTargets(8, oldRTVs, &oldDSV);
 
-	D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-	UINT numViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-	context->RSGetViewports(&numViewports, oldViewports);
+	ID3D11RasterizerState* oldRS = nullptr;
+	context->RSGetState(&oldRS);
 
-	// Set our render target
-	auto rtv = mainTarget.RTV;
-	context->OMSetRenderTargets(1, &rtv, nullptr);
+	ID3D11BlendState* oldBlend = nullptr;
+	float oldBlendFactor[4];
+	UINT oldMask;
+	context->OMGetBlendState(&oldBlend, oldBlendFactor, &oldMask);
 
-	// Set viewport to full screen
+	// Set viewport to match the BackBuffer (Screen Resolution)
+	D3D11_TEXTURE2D_DESC desc;
+	backBuffer->GetDesc(&desc);
 	D3D11_VIEWPORT viewport = {};
-	viewport.TopLeftX = 0;
-	viewport.TopLeftY = 0;
-
-	D3D11_TEXTURE2D_DESC texDesc;
-	mainTarget.texture->GetDesc(&texDesc);
-	viewport.Width = static_cast<float>(texDesc.Width);
-	viewport.Height = static_cast<float>(texDesc.Height);
-
+	viewport.Width = static_cast<float>(desc.Width);
+	viewport.Height = static_cast<float>(desc.Height);
 	viewport.MinDepth = 0.0f;
 	viewport.MaxDepth = 1.0f;
+	viewport.TopLeftX = 0;
+	viewport.TopLeftY = 0;
 	context->RSSetViewports(1, &viewport);
 
-	// Save current state
-	ID3D11BlendState* oldBlendState = nullptr;
-	float oldBlendFactor[4];
-	UINT oldSampleMask;
-	context->OMGetBlendState(&oldBlendState, oldBlendFactor, &oldSampleMask);
+	// 2. Set Render Target (BackBuffer, NO Depth)
+	ID3D11RenderTargetView* rtvs[1] = { backBufferRTV.get() };
+	context->OMSetRenderTargets(1, rtvs, nullptr);  // Ensure nullptr DSV
 
-	// Set our blend state for transparency
-	float blendFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
+	// 3. Set States (CRITICAL)
+	context->RSSetState(rasterizerState.get());  // Force No Culling
 
-	// Bind constant buffers
+	float blendFactor[4] = { 0.f, 0.f, 0.f, 0.f };
+	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);  // Force Alpha Blend
+
+	// 4. Bind Shaders & Buffers
 	auto foveatedCB = foveatedBuffer.get();
 	auto settingsCB = settingsBuffer.get();
 	context->PSSetConstantBuffers(10, 1, &foveatedCB);
 	context->PSSetConstantBuffers(11, 1, &settingsCB);
 
-	// Bind shaders
-	context->PSSetShader(reinterpret_cast<ID3D11PixelShader*>(debugPS->shader), nullptr, 0);
-	context->VSSetShader(reinterpret_cast<ID3D11VertexShader*>(debugVS->shader), nullptr, 0);
+	context->PSSetShader(debugPS.get(), nullptr, 0);
+	context->VSSetShader(debugVS.get(), nullptr, 0);
 
-	// Draw fullscreen triangle
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	context->IASetInputLayout(nullptr);
+
+	// 5. Draw
 	context->Draw(3, 0);
 
-	logger::info("FoveatedDebug: Draw call executed");
+	logger::info("FoveatedDebug: Drew overlay to {}x{} backbuffer", desc.Width, desc.Height);
 
-	// Restore render targets and viewport
+	// --- Restore Old State ---
 	context->OMSetRenderTargets(8, oldRTVs, oldDSV);
-	context->RSSetViewports(numViewports, oldViewports);
+	context->RSSetState(oldRS);  // Restore Rasterizer
+	context->OMSetBlendState(oldBlend, oldBlendFactor, oldMask);
 
-	// Release old RTVs
-	for (int i = 0; i < 8; i++) {
-		if (oldRTVs[i])
-			oldRTVs[i]->Release();
-	}
+	// Cleanup References
+	if (oldRS)
+		oldRS->Release();
+	if (oldBlend)
+		oldBlend->Release();
+	for (auto* rtv : oldRTVs)
+		if (rtv)
+			rtv->Release();
 	if (oldDSV)
 		oldDSV->Release();
 
-	// Restore old blend state
-	context->OMSetBlendState(oldBlendState, oldBlendFactor, oldSampleMask);
-	if (oldBlendState) {
-		oldBlendState->Release();
-	}
-
-	// Unbind shaders
+	// Unbind Shaders
 	context->PSSetShader(nullptr, nullptr, 0);
 	context->VSSetShader(nullptr, nullptr, 0);
-
-	// Unbind constant buffers
-	ID3D11Buffer* nullBuffer = nullptr;
-	context->PSSetConstantBuffers(10, 1, &nullBuffer);
-	context->PSSetConstantBuffers(11, 1, &nullBuffer);
 }
 
-void FoveatedDebug::Prepass()
+// 2. Implement the Install function
+void FoveatedDebug::Hooks::Install()
 {
-	// Draw the overlay during the prepass stage
-	Draw();
+	if (globals::d3d::swapChain) {
+		// Index 8 is standard for IDXGISwapChain::Present, confirmed by Hooks.cpp
+		stl::detour_vfunc<8, IDXGISwapChain_Present>(globals::d3d::swapChain);
+		logger::info("FoveatedDebug: Installed Present hook");
+	} else {
+		logger::error("FoveatedDebug: Failed to install hook - SwapChain is null");
+	}
+}
+
+// 3. Call Install() in PostPostLoad
+// 1. Clean up PostPostLoad (Remove Hooks::Install from here)
+void FoveatedDebug::PostPostLoad()
+{
+	if (!globals::game::isVR)
+		return;
+
+	// Only initialize logic that doesn't need the GPU/Window here
+	InitializeEyeTracking();
+}
+
+// 2. Use DataLoaded to install the hook
+// This runs after the game engine and D3D are fully initialized.
+void FoveatedDebug::DataLoaded()
+{
+	// It is now safe to access globals::d3d::swapChain
+	Hooks::Install();
 }
