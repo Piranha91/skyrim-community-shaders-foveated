@@ -1,119 +1,128 @@
+// FoveatedDebug.hlsl - Debug visualization for foveated rendering regions
+
 // Constant buffers
-cbuffer FoveatedRegion : register(b10)
+cbuffer FoveatedRegionData : register(b10)
 {
-	float2 GazePoint;    // Normalized screen position (0-1)
-	float InnerRadius;   // Inner full-detail radius
-	float OuterRadius;   // Outer falloff radius
-	float EdgeSoftness;  // Transition smoothness
-	uint IsTracking;     // Eye tracking active flag
+	float2 GazePoint;    // Normalized screen coords (0-1)
+	float InnerRadius;   // Inner full-res radius
+	float OuterRadius;   // Outer transition radius
+	float EdgeSoftness;  // Falloff between inner/outer
+	uint IsTracking;     // Whether eye tracking is active
 	float Confidence;    // Tracking confidence (0-1)
 	uint2 pad0;
 }
 
 cbuffer Settings : register(b11)
 {
-	bool EnableDebug;
-	float3 DebugHue;
-	float DebugAlpha;
-	bool ShowGazePoint;
+	uint EnableDebug;
+	float3 DebugHue;   // RGB color for overlay
+	float DebugAlpha;  // Overlay transparency
+	uint ShowGazePoint;
 	float GazePointSize;
-	bool ShowMetrics;
+	uint ShowMetrics;
 	uint pad1;
 }
 
-// Structures
+// Vertex shader output / Pixel shader input
 struct VS_OUTPUT
 {
-	float4 position : SV_POSITION;
-	float2 texcoord : TEXCOORD0;
+	float4 Position : SV_POSITION;
+	float2 TexCoord : TEXCOORD0;
 };
 
+#ifdef VERTEX_SHADER
+
 // Vertex Shader - Fullscreen triangle
-VS_OUTPUT main_vs(uint id : SV_VERTEXID)
+VS_OUTPUT main(uint id : SV_VertexID)
 {
 	VS_OUTPUT output;
+
 	// Generate fullscreen triangle
-	output.texcoord = float2((id << 1) & 2, id & 2);
-	output.position = float4(output.texcoord * float2(2, -2) + float2(-1, 1), 0, 1);
+	output.TexCoord = float2((id << 1) & 2, id & 2);
+	output.Position = float4(output.TexCoord * float2(2, -2) + float2(-1, 1), 0, 1);
+
 	return output;
 }
 
-// Helper function: Draw a circle
-float Circle(float2 uv, float2 center, float radius, float softness)
+#endif  // VERTEX_SHADER
+
+#ifdef PIXEL_SHADER
+
+// Helper function: Calculate distance from point
+float Circle(float2 uv, float2 center, float radius)
 {
-	float dist = distance(uv, center);
-	return 1.0 - smoothstep(radius - softness, radius + softness, dist);
+	return length(uv - center) - radius;
 }
 
-// Helper function: Draw a crosshair
+// Helper function: Draw crosshair
 float Crosshair(float2 uv, float2 center, float size, float thickness)
 {
-	float2 delta = abs(uv - center);
-	float horizontal = step(delta.y, thickness) * step(delta.x, size);
-	float vertical = step(delta.x, thickness) * step(delta.y, size);
+	float2 d = abs(uv - center);
+	float horizontal = step(d.y, thickness) * step(d.x, size);
+	float vertical = step(d.x, thickness) * step(d.y, size);
 	return max(horizontal, vertical);
 }
 
-// Pixel Shader - Debug visualization
-float4 main_ps(VS_OUTPUT input) :
-	SV_TARGET
+// Pixel Shader - Visualize foveated region
+float4 main(VS_OUTPUT input) :
+	SV_Target
 {
 	if (!EnableDebug)
 		discard;
 
-	float2 uv = input.texcoord;
+	float2 uv = input.TexCoord;
+
+	// Calculate distance from gaze point
 	float dist = distance(uv, GazePoint);
 
-	// Create foveated region visualization
-	// Inner circle: High opacity (foveal region)
-	// Transition ring: Gradient opacity (parafoveal region)
-	// Outer area: Low opacity (peripheral region)
-
-	float innerMask = 1.0 - smoothstep(InnerRadius - EdgeSoftness, InnerRadius, dist);
-	float outerMask = smoothstep(OuterRadius - EdgeSoftness, OuterRadius, dist);
-
-	// Combine masks: bright in center, fade in transition, transparent outside
-	float regionMask = innerMask * 0.8 + (1.0 - innerMask) * (1.0 - outerMask) * 0.4;
-
-	// Base color
+	// Visualize foveated regions
+	float alpha = 0.0;
 	float3 color = DebugHue;
 
-	// Modulate color based on tracking state
-	if (!IsTracking) {
-		// Gray and dim when not tracking
-		color = float3(0.5, 0.5, 0.5);
-		regionMask *= 0.5;
-	} else {
-		// Pulsing effect when tracking
-		float pulse = sin(input.position.x * 0.01) * 0.1 + 0.9;
-		color *= pulse;
-
-		// Color intensity based on confidence
-		color *= lerp(0.5, 1.0, Confidence);
+	// Inner radius (foveal region) - higher opacity
+	if (dist < InnerRadius) {
+		alpha = DebugAlpha * 0.6;
+	}
+	// Transition zone (parafoveal region) - gradient opacity
+	else if (dist < OuterRadius) {
+		float t = (dist - InnerRadius) / (OuterRadius - InnerRadius);
+		alpha = DebugAlpha * lerp(0.6, 0.2, t);
+	}
+	// Outer region (peripheral) - low opacity
+	else {
+		alpha = DebugAlpha * 0.2;
 	}
 
-	// Add gaze point crosshair
-	float crosshair = 0.0;
-	if (ShowGazePoint && IsTracking) {
-		crosshair = Crosshair(uv, GazePoint, GazePointSize, GazePointSize * 0.2);
+	// Draw boundary rings
+	float innerRing = abs(Circle(uv, GazePoint, InnerRadius));
+	float outerRing = abs(Circle(uv, GazePoint, OuterRadius));
 
-		// Make crosshair more visible
+	if (innerRing < 0.002) {
+		color = float3(1, 1, 1);  // White ring
+		alpha = DebugAlpha * 0.8;
+	}
+	if (outerRing < 0.002) {
+		color = float3(1, 1, 1);  // White ring
+		alpha = DebugAlpha * 0.8;
+	}
+
+	// Draw gaze point crosshair
+	if (ShowGazePoint) {
+		float crosshair = Crosshair(uv, GazePoint, GazePointSize, GazePointSize * 0.15);
 		if (crosshair > 0.0) {
-			color = float3(1.0, 1.0, 0.0);  // Yellow crosshair
-			regionMask = 1.0;
+			if (IsTracking) {
+				// Yellow when tracking
+				color = float3(1, 1, 0);
+				alpha = DebugAlpha;
+			} else {
+				// Gray when not tracking
+				color = float3(0.5, 0.5, 0.5);
+				alpha = DebugAlpha * 0.5;
+			}
 		}
 	}
 
-	// Add ring markers for inner and outer boundaries
-	float innerRing = Circle(uv, GazePoint, InnerRadius, 0.002);
-	float outerRing = Circle(uv, GazePoint, OuterRadius, 0.002);
-
-	if (innerRing > 0.5 || outerRing > 0.5) {
-		color = float3(1.0, 1.0, 1.0);  // White rings
-		regionMask = max(regionMask, 0.6);
-	}
-
-	// Final output
-	float alpha = DebugAlpha * regionMask;
 	return float4(color, alpha);
 }
+
+#endif  // PIXEL_SHADER
