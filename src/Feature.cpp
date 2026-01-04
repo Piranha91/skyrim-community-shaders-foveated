@@ -6,6 +6,7 @@
 #include "Features/DynamicCubemaps.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
+#include "Features/FoveatedDebug.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/HairSpecular.h"
@@ -227,7 +228,8 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::ibl,
 		&globals::features::extendedTranslucency,
 		&globals::features::upscaling,
-		&globals::features::renderDoc
+		&globals::features::renderDoc,
+		&globals::features::foveatedDebug
 	};
 
 	if (REL::Module::IsVR()) {

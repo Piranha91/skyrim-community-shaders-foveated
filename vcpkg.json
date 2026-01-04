@@ -9,29 +9,30 @@
         }
     },
     "default-features": ["commonlibsse-ng"],
-    "dependencies": [
-        "bshoshany-thread-pool",
-        "clib-util",
-        "cppwinrt",
-        "directx-headers",
-        "directxtex",
-        "eastl",
-        "efsw",
-        {
-            "name": "imgui",
-            "features": ["dx11-binding", "win32-binding", "docking-experimental"]
-        },
-        "intel-xess",
-        "magic-enum",
-        "detours",
-        "nlohmann-json",
-        "pystring",
-        "renderdoc",
-        "stb",
-        "tracy",
-        "unordered-dense",
-        "xbyak"
-    ],
+  "dependencies": [
+    "bshoshany-thread-pool",
+    "clib-util",
+    "cppwinrt",
+    "directx-headers",
+    "directxtex",
+    "eastl",
+    "efsw",
+    {
+      "name": "imgui",
+      "features": [ "dx11-binding", "win32-binding", "docking-experimental" ]
+    },
+    "intel-xess",
+    "magic-enum",
+    "detours",
+    "nlohmann-json",
+    "pystring",
+    "renderdoc",
+    "stb",
+    "tracy",
+    "unordered-dense",
+    "xbyak",
+    "openxr-loader"
+  ],
     "overrides": [
         {
             "name": "bshoshany-thread-pool",

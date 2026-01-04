@@ -5,6 +5,7 @@
 #include "Features/DynamicCubemaps.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
+#include "Features/FoveatedDebug.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/HairSpecular.h"
@@ -76,6 +77,7 @@ namespace globals
 		ExtendedTranslucency extendedTranslucency{};
 		Upscaling upscaling{};
 		RenderDoc renderDoc{};
+		FoveatedDebug foveatedDebug{};
 
 		namespace llf
 		{

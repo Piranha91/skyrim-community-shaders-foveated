@@ -7,3 +7,6 @@
 [submodule "extern/FidelityFX-SDK"]
 	path = extern/FidelityFX-SDK
 	url = https://github.com/MapleHinata/FidelityFX-SDK
+[submodule "vcpkg"]
+	path = vcpkg
+	url = https://github.com/microsoft/vcpkg

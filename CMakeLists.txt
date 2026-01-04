@@ -33,6 +33,7 @@ message("\tAuto plugin deployment: ${AUTO_PLUGIN_DEPLOYMENT}")
 message("\tZip to dist: ${ZIP_TO_DIST}")
 message("\tAIO Zip to dist: ${AIO_ZIP_TO_DIST}")
 message("\tTracy profiler: ${TRACY_SUPPORT}")
+message("\tSRanipal support: ${ENABLE_SRANIPAL}")
 
 # #######################################################################################################################
 # # Add CMake features
@@ -57,6 +58,7 @@ find_package(unordered_dense CONFIG REQUIRED)
 find_package(efsw CONFIG REQUIRED)
 find_package(Tracy CONFIG REQUIRED)
 find_package(directx-headers CONFIG REQUIRED)
+find_package(OpenXR CONFIG REQUIRED)
 add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/Streamline)
 include(XeSS-SDK)
 
@@ -64,9 +66,21 @@ find_path(DETOURS_INCLUDE_DIRS "detours/detours.h")
 find_library(DETOURS_LIBRARY detours REQUIRED)
 include(FidelityFX-SDK)
 
+# Optional: SRanipal SDK for HTC Vive Pro Eye support
+if(ENABLE_SRANIPAL)
+    find_path(SRANIPAL_INCLUDE_DIRS "SRanipal.h")
+    find_library(SRANIPAL_LIBRARY SRanipal REQUIRED)
+    if(SRANIPAL_INCLUDE_DIRS AND SRANIPAL_LIBRARY)
+        message("SRanipal SDK found: ${SRANIPAL_INCLUDE_DIRS}")
+    else()
+        message(FATAL_ERROR "SRanipal SDK not found. Please disable ENABLE_SRANIPAL or install the SDK.")
+    endif()
+endif()
+
 target_compile_definitions(
     ${PROJECT_NAME}
     PRIVATE "$<$<BOOL:${TRACY_SUPPORT}>:TRACY_SUPPORT>"
+	"$<$<BOOL:${ENABLE_SRANIPAL}>:HAVE_SRANIPAL>"
 )
 
 file(
@@ -89,6 +103,7 @@ target_include_directories(
         ${CLIB_UTIL_INCLUDE_DIRS}
         "${CMAKE_SOURCE_DIR}/package/Shaders"
         ${DETOURS_INCLUDE_DIRS}
+		$<$<BOOL:${ENABLE_SRANIPAL}>:${SRANIPAL_INCLUDE_DIRS}>
 )
 
 target_link_libraries(
@@ -110,6 +125,8 @@ target_link_libraries(
         d3d12.lib
         Microsoft::DirectX-Headers
         ${DETOURS_LIBRARY}
+		OpenXR::openxr_loader
+        $<$<BOOL:${ENABLE_SRANIPAL}>:${SRANIPAL_LIBRARY}>
 )
 
 # https://gitlab.kitware.com/cmake/cmake/-/issues/24922#note_1371990

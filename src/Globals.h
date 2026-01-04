@@ -22,6 +22,7 @@ struct TerrainHelper;
 struct TerrainShadows;
 struct VolumetricLighting;
 struct VR;
+struct FoveatedDebug;
 struct WaterEffects;
 struct WeatherPicker;
 struct PerformanceOverlay;
@@ -80,6 +81,7 @@ namespace globals
 		extern ExtendedTranslucency extendedTranslucency;
 		extern Upscaling upscaling;
 		extern RenderDoc renderDoc;
+		extern FoveatedDebug foveatedDebug;
 
 		namespace llf
 		{
