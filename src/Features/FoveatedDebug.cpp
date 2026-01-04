@@ -106,6 +106,11 @@ void FoveatedDebug::SetupResources()
 		return;
 	}
 
+	// Initialize VR overlay
+	if (!InitVROverlay()) {
+		logger::warn("FoveatedDebug: VR overlay init failed, will only render to mirror");
+	}
+
 	initialized = true;
 	logger::info("FoveatedDebug: Resources setup complete.");
 }
@@ -329,6 +334,9 @@ void FoveatedDebug::DrawSettings()
 	ImGui::Text("Eye Gaze Support: %s", eyeGazeSupported ? "Available" : "Not available");
 	ImGui::Text("Tracking: %s", regionData.IsTracking ? "Active" : "Inactive");
 
+	// VR Overlay status
+	ImGui::Text("VR Overlay: %s", vrOverlayHandle != vr::k_ulOverlayHandleInvalid ? "Active" : "Not available");
+
 	if (regionData.IsTracking) {
 		ImGui::Text("Gaze: (%.3f, %.3f)", regionData.GazePoint[0], regionData.GazePoint[1]);
 		ImGui::Text("Confidence: %.2f%%", regionData.Confidence * 100.0f);
@@ -338,8 +346,27 @@ void FoveatedDebug::DrawSettings()
 	ImGui::Separator();
 	ImGui::Spacing();
 
+	// Main toggle - controls both desktop mirror and VR headset
 	if (ImGui::Checkbox("Enable Debug Overlay", (bool*)&settings.EnableDebug)) {
 		ClearShaderCache();
+
+		// Also toggle VR overlay visibility
+		if (vrOverlayHandle != vr::k_ulOverlayHandleInvalid) {
+			auto* bsOpenVR = RE::BSOpenVR::GetSingleton();
+			if (bsOpenVR) {
+				auto* overlay = RE::BSOpenVR::GetIVROverlayFromContext(&bsOpenVR->vrContext);
+				if (overlay) {
+					if (settings.EnableDebug) {
+						overlay->ShowOverlay(vrOverlayHandle);
+					} else {
+						overlay->HideOverlay(vrOverlayHandle);
+					}
+				}
+			}
+		}
+	}
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("Toggles the foveated region visualization in both the desktop mirror and VR headset.");
 	}
 
 	if (settings.EnableDebug) {
@@ -433,6 +460,11 @@ void FoveatedDebug::Draw(IDXGISwapChain* swapChain)
 	// Update data (Eye Gaze / Constants)
 	UpdateEyeGazeData();
 	UpdateConstantBuffers();
+
+	// Render to VR overlay (visible in headset)
+	if (vrOverlayHandle != vr::k_ulOverlayHandleInvalid) {
+		RenderToOverlay();
+	}
 
 	// --- Save Old State ---
 	ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
@@ -536,4 +568,159 @@ void FoveatedDebug::DataLoaded()
 {
 	// It is now safe to access globals::d3d::swapChain
 	Hooks::Install();
+}
+
+bool FoveatedDebug::InitVROverlay()
+{
+	auto* bsOpenVR = RE::BSOpenVR::GetSingleton();
+	if (!bsOpenVR) {
+		logger::error("FoveatedDebug: BSOpenVR not available");
+		return false;
+	}
+
+	auto* overlay = RE::BSOpenVR::GetIVROverlayFromContext(&bsOpenVR->vrContext);
+	if (!overlay) {
+		logger::error("FoveatedDebug: IVROverlay not available");
+		return false;
+	}
+
+	// Create the overlay
+	vr::EVROverlayError err = overlay->CreateOverlay(
+		"community_shaders.foveated_debug",
+		"Foveated Debug Overlay",
+		&vrOverlayHandle);
+
+	if (err != vr::VROverlayError_None) {
+		logger::error("FoveatedDebug: Failed to create VR overlay: {}", (int)err);
+		return false;
+	}
+
+	// Configure overlay to fill the view
+	overlay->SetOverlayWidthInMeters(vrOverlayHandle, 4.0f);
+
+	// Position in front of the user's face
+	vr::HmdMatrix34_t transform = {};
+	transform.m[0][0] = 1.0f;
+	transform.m[1][1] = 1.0f;
+	transform.m[2][2] = 1.0f;
+	transform.m[2][3] = -2.0f;  // 2 meters in front
+
+	overlay->SetOverlayTransformTrackedDeviceRelative(
+		vrOverlayHandle,
+		vr::k_unTrackedDeviceIndex_Hmd,
+		&transform);
+
+	// Set high quality and show it
+	overlay->SetOverlaySortOrder(vrOverlayHandle, 100);
+	overlay->ShowOverlay(vrOverlayHandle);
+
+	// Create render target texture for the overlay
+	auto device = globals::d3d::device;
+
+	D3D11_TEXTURE2D_DESC texDesc = {};
+	texDesc.Width = 1024;
+	texDesc.Height = 1024;
+	texDesc.MipLevels = 1;
+	texDesc.ArraySize = 1;
+	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	texDesc.SampleDesc.Count = 1;
+	texDesc.Usage = D3D11_USAGE_DEFAULT;
+	texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+	if (FAILED(device->CreateTexture2D(&texDesc, nullptr, overlayTexture.put()))) {
+		logger::error("FoveatedDebug: Failed to create overlay texture");
+		overlay->DestroyOverlay(vrOverlayHandle);
+		vrOverlayHandle = vr::k_ulOverlayHandleInvalid;
+		return false;
+	}
+
+	if (FAILED(device->CreateRenderTargetView(overlayTexture.get(), nullptr, overlayRTV.put()))) {
+		logger::error("FoveatedDebug: Failed to create overlay RTV");
+		overlay->DestroyOverlay(vrOverlayHandle);
+		vrOverlayHandle = vr::k_ulOverlayHandleInvalid;
+		return false;
+	}
+
+	if (settings.EnableDebug) {
+		overlay->ShowOverlay(vrOverlayHandle);
+	} else {
+		overlay->HideOverlay(vrOverlayHandle);
+	}
+
+	logger::info("FoveatedDebug: VR overlay created successfully");
+	return true;
+}
+
+void FoveatedDebug::ShutdownVROverlay()
+{
+	if (vrOverlayHandle != vr::k_ulOverlayHandleInvalid) {
+		if (auto* bsOpenVR = RE::BSOpenVR::GetSingleton()) {
+			if (auto* overlay = RE::BSOpenVR::GetIVROverlayFromContext(&bsOpenVR->vrContext)) {
+				overlay->DestroyOverlay(vrOverlayHandle);
+			}
+		}
+		vrOverlayHandle = vr::k_ulOverlayHandleInvalid;
+	}
+
+	overlayTexture = nullptr;
+	overlayRTV = nullptr;
+}
+
+void FoveatedDebug::RenderToOverlay()
+{
+	if (vrOverlayHandle == vr::k_ulOverlayHandleInvalid || !overlayRTV)
+		return;
+
+	auto* bsOpenVR = RE::BSOpenVR::GetSingleton();
+	if (!bsOpenVR)
+		return;
+
+	auto* overlay = RE::BSOpenVR::GetIVROverlayFromContext(&bsOpenVR->vrContext);
+	if (!overlay)
+		return;
+
+	auto context = globals::d3d::context;
+
+	// Clear the overlay texture
+	float clearColor[4] = { 0, 0, 0, 0 };
+	context->ClearRenderTargetView(overlayRTV.get(), clearColor);
+
+	// Set up rendering to overlay texture
+	D3D11_VIEWPORT viewport = {};
+	viewport.Width = 1024.0f;
+	viewport.Height = 1024.0f;
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
+	context->RSSetViewports(1, &viewport);
+
+	ID3D11RenderTargetView* rtvs[1] = { overlayRTV.get() };
+	context->OMSetRenderTargets(1, rtvs, nullptr);
+
+	// Set states
+	context->RSSetState(rasterizerState.get());
+	float blendFactor[4] = { 0, 0, 0, 0 };
+	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
+
+	// Bind shaders and buffers
+	auto foveatedCB = foveatedBuffer.get();
+	auto settingsCB = settingsBuffer.get();
+	context->PSSetConstantBuffers(10, 1, &foveatedCB);
+	context->PSSetConstantBuffers(11, 1, &settingsCB);
+
+	context->PSSetShader(debugPS.get(), nullptr, 0);
+	context->VSSetShader(debugVS.get(), nullptr, 0);
+
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	context->IASetInputLayout(nullptr);
+
+	// Draw
+	context->Draw(3, 0);
+
+	// Submit texture to VR overlay
+	vr::Texture_t vrTex = {};
+	vrTex.handle = overlayTexture.get();
+	vrTex.eType = vr::TextureType_DirectX;
+	vrTex.eColorSpace = vr::ColorSpace_Auto;
+
+	overlay->SetOverlayTexture(vrOverlayHandle, &vrTex);
 }

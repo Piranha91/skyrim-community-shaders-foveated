@@ -145,4 +145,17 @@ private:
 	} metrics;
 
 	bool initialized = false;
+
+	//=========================================================================
+	// VR OVERLAY SYSTEM
+	//=========================================================================
+
+	vr::VROverlayHandle_t vrOverlayHandle = vr::k_ulOverlayHandleInvalid;
+	winrt::com_ptr<ID3D11Texture2D> overlayTexture;
+	winrt::com_ptr<ID3D11RenderTargetView> overlayRTV;
+	winrt::com_ptr<ID3D11ShaderResourceView> overlaySRV;
+
+	bool InitVROverlay();
+	void ShutdownVROverlay();
+	void RenderToOverlay();
 };
