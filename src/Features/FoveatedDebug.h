@@ -11,30 +11,26 @@ struct FoveatedDebug : Feature
 
 	struct Settings
 	{
-		uint32_t EnableDebug = 1;  // Default to 1 so it's visible!
+		uint32_t EnableDebug = 1;
 		std::array<float, 3> DebugHue = { 1.0f, 0.0f, 0.0f };
 		float DebugAlpha = 0.3f;
 		uint32_t ShowGazePoint = 1;
 		float GazePointSize = 0.02f;
 		uint32_t ShowMetrics = 1;
-		uint32_t pad0[4] = { 0 };  // Keep your padding fix!
+		uint32_t pad0[4] = { 0 };
 	};
 
 	struct FoveatedRegionData
 	{
-		float GazePoint[2] = { 0.5f, 0.5f };  // 8 bytes
-		float InnerRadius = 0.15f;            // 4 bytes
-		float OuterRadius = 0.35f;            // 4 bytes
-		// --- 16 bytes boundary ---
+		float GazePoint[2] = { 0.5f, 0.5f };
+		float InnerRadius = 0.15f;
+		float OuterRadius = 0.35f;
 
-		float EdgeSoftness = 0.05f;  // 4 bytes
-		uint32_t IsTracking = 0;     // 4 bytes
-		float Confidence = 0.0f;     // 4 bytes
-		// --- 28 bytes so far ---
+		float EdgeSoftness = 0.05f;
+		uint32_t IsTracking = 0;
+		float Confidence = 0.0f;
 
-		// 36 bytes previously (28 + 8). We need 48 bytes total.
-		// So we need 20 bytes of padding (48 - 28 = 20).
-		uint32_t pad[5] = { 0 };  // 5 * 4 = 20 bytes
+		uint32_t pad[5] = { 0 };
 	};
 
 	Settings settings;
@@ -57,6 +53,10 @@ struct FoveatedDebug : Feature
 	void DrawSettings() override;
 	void ClearShaderCache() override;
 
+	//=========================================================================
+	// HOOKS (merged - desktop mirror + VR compositor)
+	//=========================================================================
+
 	struct Hooks
 	{
 		struct IDXGISwapChain_Present
@@ -65,11 +65,23 @@ struct FoveatedDebug : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct IVRCompositor_Submit
+		{
+			static vr::EVRCompositorError thunk(
+				vr::IVRCompositor* _this,
+				vr::EVREye eEye,
+				const vr::Texture_t* pTexture,
+				const vr::VRTextureBounds_t* pBounds,
+				vr::EVRSubmitFlags nSubmitFlags);
+			static inline decltype(&thunk) func;
+		};
+
 		static void Install();
 	};
 
-	void Draw(IDXGISwapChain* swapChain);            
-	void UpdateConstantBuffers();  
+	void Draw(IDXGISwapChain* swapChain);
+	void DrawToEyeTexture(ID3D11Texture2D* eyeTexture);
+	void UpdateConstantBuffers();
 
 	void SaveSettings(json& o_json) override;
 	void LoadSettings(json& o_json) override;
@@ -82,8 +94,8 @@ struct FoveatedDebug : Feature
 	enum class EyeTrackingAPI
 	{
 		None,
-		OpenXR,   // Standard OpenXR eye gaze
-		Fallback  // Center-based fallback
+		OpenXR,
+		Fallback
 	};
 
 	bool InitializeEyeTracking();
@@ -110,7 +122,6 @@ private:
 	XrSpace xrViewSpace = XR_NULL_HANDLE;
 	XrSpace xrGazeSpace = XR_NULL_HANDLE;
 
-	// Action set for eye tracking
 	XrActionSet xrActionSet = XR_NULL_HANDLE;
 	XrAction xrGazeAction = XR_NULL_HANDLE;
 
@@ -123,7 +134,6 @@ private:
 
 	EyeTrackingAPI activeAPI = EyeTrackingAPI::None;
 
-	// Projection helpers
 	void ProjectGazeToScreen(const DirectX::XMFLOAT3& gazeDirection, float& outU, float& outV);
 
 	//=========================================================================
@@ -137,7 +147,6 @@ private:
 	winrt::com_ptr<ID3D11BlendState> blendState;
 	winrt::com_ptr<ID3D11RasterizerState> rasterizerState;
 
-	// Debug metrics
 	struct Metrics
 	{
 		uint32_t updateCount = 0;
@@ -146,16 +155,6 @@ private:
 
 	bool initialized = false;
 
-	//=========================================================================
-	// VR OVERLAY SYSTEM
-	//=========================================================================
-
-	vr::VROverlayHandle_t vrOverlayHandle = vr::k_ulOverlayHandleInvalid;
-	winrt::com_ptr<ID3D11Texture2D> overlayTexture;
-	winrt::com_ptr<ID3D11RenderTargetView> overlayRTV;
-	winrt::com_ptr<ID3D11ShaderResourceView> overlaySRV;
-
-	bool InitVROverlay();
-	void ShutdownVROverlay();
-	void RenderToOverlay();
+	bool compositorHookInstalled = false;
+	void TryInstallCompositorHook();
 };
