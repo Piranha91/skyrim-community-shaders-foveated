@@ -52,9 +52,10 @@ struct FoveatedDebug : Feature
 	void PostPostLoad() override;
 	void DrawSettings() override;
 	void ClearShaderCache() override;
+	void Prepass() override;
 
 	//=========================================================================
-	// HOOKS (merged - desktop mirror + VR compositor)
+	// HOOKS
 	//=========================================================================
 
 	struct Hooks
@@ -65,23 +66,38 @@ struct FoveatedDebug : Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct ID3D11DeviceContext_CopySubresourceRegion
+		{
+			static void STDMETHODCALLTYPE thunk(
+				ID3D11DeviceContext* _this,
+				ID3D11Resource* pDstResource,
+				UINT DstSubresource,
+				UINT DstX,
+				UINT DstY,
+				UINT DstZ,
+				ID3D11Resource* pSrcResource,
+				UINT SrcSubresource,
+				const D3D11_BOX* pSrcBox);
+			static inline decltype(&thunk) func;
+		};
+
 		struct IVRCompositor_Submit
 		{
-			static vr::EVRCompositorError thunk(
-				vr::IVRCompositor* _this,
-				vr::EVREye eEye,
-				const vr::Texture_t* pTexture,
-				const vr::VRTextureBounds_t* pBounds,
-				vr::EVRSubmitFlags nSubmitFlags);
-			static inline decltype(&thunk) func;
+			static vr::EVRCompositorError thunk(vr::IVRCompositor* _this, vr::EVREye eEye, const vr::Texture_t* pTexture, const vr::VRTextureBounds_t* pBounds, vr::EVRSubmitFlags nSubmitFlags);
+			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
 		static void Install();
 	};
 
+	//=========================================================================
+	// PUBLIC METHODS
+	//=========================================================================
+
 	void Draw(IDXGISwapChain* swapChain);
-	void DrawToEyeTexture(ID3D11Texture2D* eyeTexture);
+	void DrawOverlayToTexture(ID3D11Texture2D* texture);
 	void UpdateConstantBuffers();
+	void UpdateEyeGazeData();
 
 	void SaveSettings(json& o_json) override;
 	void LoadSettings(json& o_json) override;
@@ -99,12 +115,30 @@ struct FoveatedDebug : Feature
 	};
 
 	bool InitializeEyeTracking();
-	void UpdateEyeGazeData();
 	void ShutdownEyeTracking();
 
 	EyeTrackingAPI GetActiveAPI() const { return activeAPI; }
 	const char* GetAPIName() const;
 	bool IsEyeTrackingAvailable() const { return activeAPI == EyeTrackingAPI::OpenXR; }
+
+	//=========================================================================
+	// RENDERING RESOURCES (public for hook access)
+	//=========================================================================
+
+	winrt::com_ptr<ID3D11Buffer> foveatedBuffer;
+	winrt::com_ptr<ID3D11Buffer> settingsBuffer;
+	winrt::com_ptr<ID3D11PixelShader> debugPS;
+	winrt::com_ptr<ID3D11VertexShader> debugVS;
+	winrt::com_ptr<ID3D11BlendState> blendState;
+	winrt::com_ptr<ID3D11RasterizerState> rasterizerState;
+
+	bool initialized = false;
+
+	struct Metrics
+	{
+		uint32_t updateCount = 0;
+		float averageConfidence = 0.0f;
+	} metrics;
 
 private:
 	//=========================================================================
@@ -128,33 +162,7 @@ private:
 	bool openXRInitialized = false;
 	bool eyeGazeSupported = false;
 
-	//=========================================================================
-	// SHARED TRACKING STATE
-	//=========================================================================
-
 	EyeTrackingAPI activeAPI = EyeTrackingAPI::None;
 
 	void ProjectGazeToScreen(const DirectX::XMFLOAT3& gazeDirection, float& outU, float& outV);
-
-	//=========================================================================
-	// RENDERING RESOURCES
-	//=========================================================================
-
-	winrt::com_ptr<ID3D11Buffer> foveatedBuffer;
-	winrt::com_ptr<ID3D11Buffer> settingsBuffer;
-	winrt::com_ptr<ID3D11PixelShader> debugPS;
-	winrt::com_ptr<ID3D11VertexShader> debugVS;
-	winrt::com_ptr<ID3D11BlendState> blendState;
-	winrt::com_ptr<ID3D11RasterizerState> rasterizerState;
-
-	struct Metrics
-	{
-		uint32_t updateCount = 0;
-		float averageConfidence = 0.0f;
-	} metrics;
-
-	bool initialized = false;
-
-	bool compositorHookInstalled = false;
-	void TryInstallCompositorHook();
 };

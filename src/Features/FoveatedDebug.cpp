@@ -1,11 +1,13 @@
 #include "FoveatedDebug.h"
+#include "Globals.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include <DirectXMath.h>
-#include "Globals.h"
 #include <openvr.h>
 #define XR_USE_GRAPHICS_API_D3D11
 #include <openxr/openxr_platform.h>
+
+#include "RE/B/BSOpenVR.h"
 
 #include <d3dcompiler.h>
 #include <filesystem>
@@ -58,25 +60,24 @@ void FoveatedDebug::SetupResources()
 		return;
 	}
 
-	// 1. Create Constant Buffers (Keep your existing code for this)
+	// 1. Create Constant Buffers
 	D3D11_BUFFER_DESC bufferDesc = {};
 	bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
 	bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
 	// Foveated Buffer
-	bufferDesc.ByteWidth = sizeof(FoveatedRegionData);  // 48 bytes
+	bufferDesc.ByteWidth = sizeof(FoveatedRegionData);
 	device->CreateBuffer(&bufferDesc, nullptr, foveatedBuffer.put());
 
 	// Settings Buffer
-	bufferDesc.ByteWidth = sizeof(Settings);  // 48 bytes
+	bufferDesc.ByteWidth = sizeof(Settings);
 	device->CreateBuffer(&bufferDesc, nullptr, settingsBuffer.put());
 
 	// 2. Create Rasterizer State (NO CULLING)
-	// This ensures the triangle is drawn regardless of winding order
 	D3D11_RASTERIZER_DESC rasterDesc = {};
 	rasterDesc.FillMode = D3D11_FILL_SOLID;
-	rasterDesc.CullMode = D3D11_CULL_NONE;  // <--- Critical fix
+	rasterDesc.CullMode = D3D11_CULL_NONE;
 	rasterDesc.FrontCounterClockwise = FALSE;
 	rasterDesc.DepthClipEnable = TRUE;
 
@@ -99,10 +100,8 @@ void FoveatedDebug::SetupResources()
 	logger::info("FoveatedDebug: Buffers created, compiling shaders...");
 	ClearShaderCache();
 
-	// Check if shaders compiled
 	if (!debugPS || !debugVS) {
 		logger::error("FoveatedDebug: Shader compilation failed!");
-		// Don't set initialized - leave it false
 		return;
 	}
 
@@ -114,11 +113,9 @@ void FoveatedDebug::ClearShaderCache()
 {
 	logger::info("FoveatedDebug: Recompiling shaders...");
 
-	// Release old shaders
 	debugPS = nullptr;
 	debugVS = nullptr;
 
-	// Compile Pixel Shader using existing utility
 	std::vector<std::pair<const char*, const char*>> psDefines = {
 		{ "PIXEL_SHADER", "1" },
 		{ "FOVEATED_DEBUG", "1" }
@@ -131,14 +128,12 @@ void FoveatedDebug::ClearShaderCache()
 		"main");
 
 	if (compiledPS) {
-		// attach() takes ownership of the raw pointer without AddRef
 		debugPS.attach(static_cast<ID3D11PixelShader*>(compiledPS));
 		logger::info("FoveatedDebug: Pixel shader compiled successfully");
 	} else {
 		logger::error("FoveatedDebug: Failed to compile pixel shader");
 	}
 
-	// Compile Vertex Shader
 	std::vector<std::pair<const char*, const char*>> vsDefines = {
 		{ "VERTEX_SHADER", "1" },
 		{ "FOVEATED_DEBUG", "1" }
@@ -159,7 +154,7 @@ void FoveatedDebug::ClearShaderCache()
 }
 
 //=============================================================================
-// EYE TRACKING INITIALIZATION
+// EYE TRACKING
 //=============================================================================
 
 bool FoveatedDebug::InitializeEyeTracking()
@@ -172,14 +167,12 @@ bool FoveatedDebug::InitializeEyeTracking()
 	logger::info("FoveatedDebug: Initializing eye tracking...");
 	logger::info("FoveatedDebug: OpenXR integration disabled - using center-based fallback");
 
-	// Use fallback for now
 	activeAPI = EyeTrackingAPI::Fallback;
 	regionData.GazePoint[0] = 0.5f;
 	regionData.GazePoint[1] = 0.5f;
 	regionData.IsTracking = 0;
 
 	logger::info("FoveatedDebug: Initialization complete (center-based mode)");
-
 	return true;
 }
 
@@ -197,25 +190,13 @@ const char* FoveatedDebug::GetAPIName() const
 	}
 }
 
-//=============================================================================
-// OPENXR IMPLEMENTATION
-//=============================================================================
-
 bool FoveatedDebug::InitializeOpenXR()
 {
-	logger::info("FoveatedDebug: OpenXR initialization disabled (conflicts with game runtime)");
-	logger::info("FoveatedDebug: Full OpenXR integration requires hooking game's XrSession");
-
-	// TODO: Proper OpenXR integration by hooking into game's existing session
-	// For now, just return false to use center-based fallback
-
 	return false;
 }
 
 void FoveatedDebug::UpdateOpenXRGaze()
 {
-	// TODO: Implement actual gaze tracking when we have session access
-	// For now, this is a placeholder that uses center-based fallback
 	regionData.GazePoint[0] = 0.5f;
 	regionData.GazePoint[1] = 0.5f;
 	regionData.IsTracking = 0;
@@ -252,26 +233,25 @@ void FoveatedDebug::ShutdownOpenXR()
 	eyeGazeSupported = false;
 }
 
+void FoveatedDebug::ShutdownEyeTracking()
+{
+	ShutdownOpenXR();
+	activeAPI = EyeTrackingAPI::None;
+}
+
 bool FoveatedDebug::CreateOpenXRActions()
 {
-	// TODO: Implement when we have session access
 	return false;
 }
 
-//=============================================================================
-// GAZE PROJECTION
-//=============================================================================
-
 void FoveatedDebug::ProjectGazeToScreen(const DirectX::XMFLOAT3& gazeDirection, float& outU, float& outV)
 {
-	// Normalize the gaze direction
 	XMVECTOR gaze = XMLoadFloat3(&gazeDirection);
 	gaze = XMVector3Normalize(gaze);
 
 	XMFLOAT3 gazeNorm;
 	XMStoreFloat3(&gazeNorm, gaze);
 
-	// Simple tangent-based projection
 	if (std::abs(gazeNorm.z) > 0.001f) {
 		float tanX = gazeNorm.x / -gazeNorm.z;
 		float tanY = gazeNorm.y / -gazeNorm.z;
@@ -305,7 +285,6 @@ void FoveatedDebug::UpdateEyeGazeData()
 	case EyeTrackingAPI::Fallback:
 	case EyeTrackingAPI::None:
 	default:
-		// Fallback: use screen center
 		regionData.GazePoint[0] = 0.5f;
 		regionData.GazePoint[1] = 0.5f;
 		regionData.IsTracking = 0;
@@ -386,150 +365,71 @@ void FoveatedDebug::UpdateConstantBuffers()
 
 	auto context = globals::d3d::context;
 
-	// Update foveated region data
 	D3D11_MAPPED_SUBRESOURCE mapped;
 	if (SUCCEEDED(context->Map(foveatedBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
 		memcpy(mapped.pData, &regionData, sizeof(FoveatedRegionData));
 		context->Unmap(foveatedBuffer.get(), 0);
 	}
 
-	// Update settings
 	if (SUCCEEDED(context->Map(settingsBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
 		memcpy(mapped.pData, &settings, sizeof(Settings));
 		context->Unmap(settingsBuffer.get(), 0);
 	}
 }
 
-// 1. Update the Hook to pass the SwapChain
+//=============================================================================
+// HOOKS
+//=============================================================================
+
 HRESULT WINAPI FoveatedDebug::Hooks::IDXGISwapChain_Present::thunk(IDXGISwapChain* _this, UINT SyncInterval, UINT Flags)
 {
-	// Use the global instance, not a separate singleton
 	globals::features::foveatedDebug.Draw(_this);
 	return func(_this, SyncInterval, Flags);
 }
 
-// 2. Update the Draw function
-void FoveatedDebug::Draw(IDXGISwapChain* swapChain)
+void STDMETHODCALLTYPE FoveatedDebug::Hooks::ID3D11DeviceContext_CopySubresourceRegion::thunk(
+	ID3D11DeviceContext* _this,
+	ID3D11Resource* pDstResource,
+	UINT DstSubresource,
+	UINT DstX,
+	UINT DstY,
+	UINT DstZ,
+	ID3D11Resource* pSrcResource,
+	UINT SrcSubresource,
+	const D3D11_BOX* pSrcBox)
 {
-	// Add at the very start of Draw():
-	logger::info("FoveatedDebug::Draw called - EnableDebug={}, initialized={}, PS={}, VS={}",
-		settings.EnableDebug, initialized, (bool)debugPS, (bool)debugVS);
+	static thread_local bool inHook = false;
 
-	if (!settings.EnableDebug || !initialized || !debugPS || !debugVS || !swapChain) {
-		return;
+	auto& feature = globals::features::foveatedDebug;
+
+	// Check if this is a VR frame copy (source is VR-sized texture)
+	if (!inHook && feature.settings.EnableDebug && feature.initialized &&
+		feature.debugPS && feature.debugVS && pSrcResource) {
+		ID3D11Texture2D* srcTexture = nullptr;
+		if (SUCCEEDED(pSrcResource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&srcTexture))) {
+			D3D11_TEXTURE2D_DESC desc;
+			srcTexture->GetDesc(&desc);
+
+			// Check if this is a VR-sized texture being copied
+			bool isVRCopy = (desc.Width >= 2000 && desc.Height >= 2000);
+
+			if (isVRCopy) {
+				inHook = true;
+				feature.DrawOverlayToTexture(srcTexture);
+				inHook = false;
+			}
+
+			srcTexture->Release();
+		}
 	}
 
-	auto context = globals::d3d::context;
-
-	// --- NEW: Get BackBuffer RTV ---
-	winrt::com_ptr<ID3D11Texture2D> backBuffer;
-	if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), backBuffer.put_void()))) {
-		return;
-	}
-
-	winrt::com_ptr<ID3D11RenderTargetView> backBufferRTV;
-	if (FAILED(globals::d3d::device->CreateRenderTargetView(backBuffer.get(), nullptr, backBufferRTV.put()))) {
-		return;
-	}
-	// -------------------------------
-
-	// Try to install compositor hook if not done yet (lazy initialization)
-	TryInstallCompositorHook();
-
-	// Update data (Eye Gaze / Constants)
-	UpdateEyeGazeData();
-	UpdateConstantBuffers();
-
-	// --- Save Old State ---
-	ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
-	ID3D11DepthStencilView* oldDSV = nullptr;
-	context->OMGetRenderTargets(8, oldRTVs, &oldDSV);
-
-	ID3D11RasterizerState* oldRS = nullptr;
-	context->RSGetState(&oldRS);
-
-	ID3D11BlendState* oldBlend = nullptr;
-	float oldBlendFactor[4];
-	UINT oldMask;
-	context->OMGetBlendState(&oldBlend, oldBlendFactor, &oldMask);
-
-	// Set viewport to match the BackBuffer (Screen Resolution)
-	D3D11_TEXTURE2D_DESC desc;
-	backBuffer->GetDesc(&desc);
-	D3D11_VIEWPORT viewport = {};
-	viewport.Width = static_cast<float>(desc.Width);
-	viewport.Height = static_cast<float>(desc.Height);
-	viewport.MinDepth = 0.0f;
-	viewport.MaxDepth = 1.0f;
-	viewport.TopLeftX = 0;
-	viewport.TopLeftY = 0;
-	context->RSSetViewports(1, &viewport);
-
-	// 2. Set Render Target (BackBuffer, NO Depth)
-	ID3D11RenderTargetView* rtvs[1] = { backBufferRTV.get() };
-	context->OMSetRenderTargets(1, rtvs, nullptr);  // Ensure nullptr DSV
-
-	// 3. Set States (CRITICAL)
-	context->RSSetState(rasterizerState.get());  // Force No Culling
-
-	float blendFactor[4] = { 0.f, 0.f, 0.f, 0.f };
-	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);  // Force Alpha Blend
-
-	// 4. Bind Shaders & Buffers
-	auto foveatedCB = foveatedBuffer.get();
-	auto settingsCB = settingsBuffer.get();
-	context->PSSetConstantBuffers(10, 1, &foveatedCB);
-	context->PSSetConstantBuffers(11, 1, &settingsCB);
-
-	context->PSSetShader(debugPS.get(), nullptr, 0);
-	context->VSSetShader(debugVS.get(), nullptr, 0);
-
-	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	context->IASetInputLayout(nullptr);
-
-	// 5. Draw
-	context->Draw(3, 0);
-
-	logger::info("FoveatedDebug: Drew overlay to {}x{} backbuffer", desc.Width, desc.Height);
-
-	// --- Restore Old State ---
-	context->OMSetRenderTargets(8, oldRTVs, oldDSV);
-	context->RSSetState(oldRS);  // Restore Rasterizer
-	context->OMSetBlendState(oldBlend, oldBlendFactor, oldMask);
-
-	// Cleanup References
-	if (oldRS)
-		oldRS->Release();
-	if (oldBlend)
-		oldBlend->Release();
-	for (auto* rtv : oldRTVs)
-		if (rtv)
-			rtv->Release();
-	if (oldDSV)
-		oldDSV->Release();
-
-	// Unbind Shaders
-	context->PSSetShader(nullptr, nullptr, 0);
-	context->VSSetShader(nullptr, nullptr, 0);
+	// Call original
+	func(_this, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
 }
 
-// 1. Clean up PostPostLoad (Remove Hooks::Install from here)
-void FoveatedDebug::PostPostLoad()
-{
-	if (!globals::game::isVR)
-		return;
-
-	// Only initialize logic that doesn't need the GPU/Window here
-	InitializeEyeTracking();
-}
-
-// 2. Use DataLoaded to install the hook
-// This runs after the game engine and D3D are fully initialized.
-void FoveatedDebug::DataLoaded()
-{
-	// It is now safe to access globals::d3d::swapChain
-	Hooks::Install();
-}
+// ----------------------------------------------------------------------------
+// VR COMPOSITOR SUBMIT HOOK
+// ----------------------------------------------------------------------------
 
 vr::EVRCompositorError FoveatedDebug::Hooks::IVRCompositor_Submit::thunk(
 	vr::IVRCompositor* _this,
@@ -538,43 +438,223 @@ vr::EVRCompositorError FoveatedDebug::Hooks::IVRCompositor_Submit::thunk(
 	const vr::VRTextureBounds_t* pBounds,
 	vr::EVRSubmitFlags nSubmitFlags)
 {
-	static bool loggedOnce = false;
-	if (!loggedOnce) {
-		logger::info("FoveatedDebug: Submit hook called! Eye={}, Texture={}, Type={}",
-			(int)eEye,
-			pTexture ? pTexture->handle : nullptr,
-			pTexture ? (int)pTexture->eType : -1);
-		loggedOnce = true;
+	// Log once to confirm hook is firing and what type of texture we have
+	static bool loggedSubmit = false;
+
+	// 1. Intercept the texture before submission
+	if (pTexture && pTexture->handle) {
+		// OpenVR passes D3D11 textures as void* handles
+		ID3D11Texture2D* texture = static_cast<ID3D11Texture2D*>(pTexture->handle);
+
+		if (!loggedSubmit) {
+			D3D11_TEXTURE2D_DESC desc;
+			texture->GetDesc(&desc);
+			logger::info("FoveatedDebug: Submit Hook firing. Eye: {}, Format: {}, Size: {}x{}",
+				(int)eEye, (int)desc.Format, desc.Width, desc.Height);
+			loggedSubmit = true;
+		}
+
+		// 2. Draw your overlay
+		globals::features::foveatedDebug.DrawOverlayToTexture(texture);
 	}
 
-	// Draw our overlay onto the eye texture before it's submitted
-	if (pTexture && pTexture->eType == vr::TextureType_DirectX) {
-		auto* d3dTexture = static_cast<ID3D11Texture2D*>(pTexture->handle);
-		globals::features::foveatedDebug.DrawToEyeTexture(d3dTexture);
-	}
-
+	// 3. Pass to original function (sends to headset)
 	return func(_this, eEye, pTexture, pBounds, nSubmitFlags);
 }
 
-void FoveatedDebug::DrawToEyeTexture(ID3D11Texture2D* eyeTexture)
+void FoveatedDebug::Hooks::Install()
 {
-	if (!settings.EnableDebug || !initialized || !debugPS || !debugVS || !eyeTexture)
+	// Desktop mirror hook
+	if (globals::d3d::swapChain) {
+		stl::detour_vfunc<8, IDXGISwapChain_Present>(globals::d3d::swapChain);
+		logger::info("FoveatedDebug: Installed Present hook");
+	}
+
+	// Hook CopySubresourceRegion - vtable index 46
+	if (globals::d3d::context) {
+		auto vtable = *reinterpret_cast<void***>(globals::d3d::context);
+
+		ID3D11DeviceContext_CopySubresourceRegion::func =
+			reinterpret_cast<decltype(ID3D11DeviceContext_CopySubresourceRegion::func)>(vtable[46]);
+
+		DWORD oldProtect;
+		VirtualProtect(&vtable[46], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect);
+		vtable[46] = reinterpret_cast<void*>(&ID3D11DeviceContext_CopySubresourceRegion::thunk);
+		VirtualProtect(&vtable[46], sizeof(void*), oldProtect, &oldProtect);
+
+		logger::info("FoveatedDebug: Installed CopySubresourceRegion hook");
+	}
+
+	// Hook VR Submit
+	auto openvr = RE::BSOpenVR::GetSingleton();
+	if (openvr) {
+		// Try to get compositor from context first (more robust for CommonLibVR)
+		vr::IVRCompositor* compositor = openvr->vrContext.vrCompositor;
+
+		// Fallback/Safety check using static getter if available
+		if (!compositor) {
+			compositor = RE::BSOpenVR::GetIVRCompositor();
+		}
+
+		if (compositor) {
+			// IVRCompositor::Submit is index 5
+			stl::detour_vfunc<5, IVRCompositor_Submit>(compositor);
+			logger::info("FoveatedDebug: Installed IVRCompositor::Submit hook");
+		} else {
+			logger::warn("FoveatedDebug: Failed to hook VR Submit - Compositor not found");
+		}
+	}
+}
+
+//=============================================================================
+// DRAW FUNCTIONS
+//=============================================================================
+
+void FoveatedDebug::Draw(IDXGISwapChain* swapChain)
+{
+	if (!settings.EnableDebug || !initialized || !debugPS || !debugVS)
 		return;
 
-	auto device = globals::d3d::device;
 	auto context = globals::d3d::context;
+	auto device = globals::d3d::device;
 
-	// Create a temporary RTV for the eye texture
-	winrt::com_ptr<ID3D11RenderTargetView> eyeRTV;
-	if (FAILED(device->CreateRenderTargetView(eyeTexture, nullptr, eyeRTV.put()))) {
+	UpdateEyeGazeData();
+	UpdateConstantBuffers();
+
+	// Desktop mirror rendering
+	if (swapChain) {
+		winrt::com_ptr<ID3D11Texture2D> backBuffer;
+		if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), backBuffer.put_void()))) {
+			return;
+		}
+
+		winrt::com_ptr<ID3D11RenderTargetView> backBufferRTV;
+		if (FAILED(device->CreateRenderTargetView(backBuffer.get(), nullptr, backBufferRTV.put()))) {
+			return;
+		}
+
+		// Save state
+		ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
+		ID3D11DepthStencilView* oldDSV = nullptr;
+		context->OMGetRenderTargets(8, oldRTVs, &oldDSV);
+
+		ID3D11RasterizerState* oldRS = nullptr;
+		context->RSGetState(&oldRS);
+
+		ID3D11BlendState* oldBlend = nullptr;
+		float oldBlendFactor[4];
+		UINT oldMask;
+		context->OMGetBlendState(&oldBlend, oldBlendFactor, &oldMask);
+
+		// Set viewport
+		D3D11_TEXTURE2D_DESC desc;
+		backBuffer->GetDesc(&desc);
+		D3D11_VIEWPORT viewport = {};
+		viewport.Width = static_cast<float>(desc.Width);
+		viewport.Height = static_cast<float>(desc.Height);
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+		context->RSSetViewports(1, &viewport);
+
+		// Set render target
+		ID3D11RenderTargetView* rtvs[1] = { backBufferRTV.get() };
+		context->OMSetRenderTargets(1, rtvs, nullptr);
+
+		// Set states
+		context->RSSetState(rasterizerState.get());
+		float blendFactor[4] = { 0.f, 0.f, 0.f, 0.f };
+		context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
+
+		// Bind shaders
+		auto foveatedCB = foveatedBuffer.get();
+		auto settingsCB = settingsBuffer.get();
+		context->PSSetConstantBuffers(10, 1, &foveatedCB);
+		context->PSSetConstantBuffers(11, 1, &settingsCB);
+
+		context->PSSetShader(debugPS.get(), nullptr, 0);
+		context->VSSetShader(debugVS.get(), nullptr, 0);
+
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		context->IASetInputLayout(nullptr);
+
+		// Draw
+		context->Draw(3, 0);
+
+		// Restore state
+		context->OMSetRenderTargets(8, oldRTVs, oldDSV);
+		context->RSSetState(oldRS);
+		context->OMSetBlendState(oldBlend, oldBlendFactor, oldMask);
+
+		// Cleanup
+		if (oldRS)
+			oldRS->Release();
+		if (oldBlend)
+			oldBlend->Release();
+		for (auto* rtv : oldRTVs)
+			if (rtv)
+				rtv->Release();
+		if (oldDSV)
+			oldDSV->Release();
+
+		context->PSSetShader(nullptr, nullptr, 0);
+		context->VSSetShader(nullptr, nullptr, 0);
+	}
+}
+
+void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
+{
+	if (!settings.EnableDebug || !initialized || !debugPS || !debugVS || !texture)
+		return;
+
+	auto context = globals::d3d::context;
+	auto device = globals::d3d::device;
+
+	D3D11_TEXTURE2D_DESC desc;
+	texture->GetDesc(&desc);
+
+	// IGNORE DEPTH/SHADOW MAPS (Format 53 = R16_TYPELESS)
+	// This prevents the error: "Failed to create RTV for texture format 53"
+	if (desc.Format == DXGI_FORMAT_R16_TYPELESS ||
+		desc.Format == DXGI_FORMAT_D16_UNORM ||
+		desc.Format == DXGI_FORMAT_R24G8_TYPELESS ||
+		desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT ||
+		desc.Format == DXGI_FORMAT_R32_TYPELESS ||
+		desc.Format == DXGI_FORMAT_D32_FLOAT) {
 		return;
 	}
 
-	// Get texture dimensions for viewport
-	D3D11_TEXTURE2D_DESC desc;
-	eyeTexture->GetDesc(&desc);
+	// Create a temporary RTV for this texture
+	winrt::com_ptr<ID3D11RenderTargetView> tempRTV;
+	D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+	rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+	rtvDesc.Texture2D.MipSlice = 0;
+	rtvDesc.Format = desc.Format;
 
-	// Save current state
+	// HANDLE TYPELESS COLOR FORMATS
+	// If the game uses a typeless color buffer, we must cast it to a typed format to draw on it.
+	if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS)
+		rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	else if (desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS)
+		rtvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	else if (desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS)
+		rtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+	if (FAILED(device->CreateRenderTargetView(texture, &rtvDesc, tempRTV.put()))) {
+		// Fallback to default (might fail if typeless)
+		if (FAILED(device->CreateRenderTargetView(texture, nullptr, tempRTV.put()))) {
+			static bool loggedError = false;
+			if (!loggedError) {
+				logger::warn("FoveatedDebug: Failed to create RTV for texture format {}", (int)desc.Format);
+				loggedError = true;
+			}
+			return;
+		}
+	}
+
+	UpdateEyeGazeData();
+	UpdateConstantBuffers();
+
+	// Save ALL state
 	ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
 	ID3D11DepthStencilView* oldDSV = nullptr;
 	context->OMGetRenderTargets(8, oldRTVs, &oldDSV);
@@ -591,7 +671,22 @@ void FoveatedDebug::DrawToEyeTexture(ID3D11Texture2D* eyeTexture)
 	UINT numViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
 	context->RSGetViewports(&numViewports, oldViewports);
 
-	// Set up for drawing
+	ID3D11VertexShader* oldVS = nullptr;
+	ID3D11PixelShader* oldPS = nullptr;
+	context->VSGetShader(&oldVS, nullptr, nullptr);
+	context->PSGetShader(&oldPS, nullptr, nullptr);
+
+	D3D11_PRIMITIVE_TOPOLOGY oldTopology;
+	context->IAGetPrimitiveTopology(&oldTopology);
+
+	ID3D11InputLayout* oldInputLayout = nullptr;
+	context->IAGetInputLayout(&oldInputLayout);
+
+	ID3D11DepthStencilState* oldDepthState = nullptr;
+	UINT oldStencilRef;
+	context->OMGetDepthStencilState(&oldDepthState, &oldStencilRef);
+
+	// Set up our rendering
 	D3D11_VIEWPORT viewport = {};
 	viewport.Width = static_cast<float>(desc.Width);
 	viewport.Height = static_cast<float>(desc.Height);
@@ -599,14 +694,15 @@ void FoveatedDebug::DrawToEyeTexture(ID3D11Texture2D* eyeTexture)
 	viewport.MaxDepth = 1.0f;
 	context->RSSetViewports(1, &viewport);
 
-	ID3D11RenderTargetView* rtvs[1] = { eyeRTV.get() };
-	context->OMSetRenderTargets(1, rtvs, nullptr);
+	ID3D11RenderTargetView* rtvPtr = tempRTV.get();
+	context->OMSetRenderTargets(1, &rtvPtr, nullptr);
 
 	context->RSSetState(rasterizerState.get());
 	float blendFactor[4] = { 0, 0, 0, 0 };
 	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
+	context->OMSetDepthStencilState(nullptr, 0);
 
-	// Bind shaders and buffers
+	// Bind shaders
 	auto foveatedCB = foveatedBuffer.get();
 	auto settingsCB = settingsBuffer.get();
 	context->PSSetConstantBuffers(10, 1, &foveatedCB);
@@ -618,20 +714,33 @@ void FoveatedDebug::DrawToEyeTexture(ID3D11Texture2D* eyeTexture)
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	context->IASetInputLayout(nullptr);
 
-	// Draw the overlay
+	// Draw
 	context->Draw(3, 0);
 
-	// Restore state
+	// Restore ALL state
 	context->OMSetRenderTargets(8, oldRTVs, oldDSV);
 	context->RSSetState(oldRS);
 	context->OMSetBlendState(oldBlend, oldBlendFactor, oldMask);
 	context->RSSetViewports(numViewports, oldViewports);
+	context->VSSetShader(oldVS, nullptr, 0);
+	context->PSSetShader(oldPS, nullptr, 0);
+	context->IASetPrimitiveTopology(oldTopology);
+	context->IASetInputLayout(oldInputLayout);
+	context->OMSetDepthStencilState(oldDepthState, oldStencilRef);
 
 	// Cleanup
 	if (oldRS)
 		oldRS->Release();
 	if (oldBlend)
 		oldBlend->Release();
+	if (oldVS)
+		oldVS->Release();
+	if (oldPS)
+		oldPS->Release();
+	if (oldInputLayout)
+		oldInputLayout->Release();
+	if (oldDepthState)
+		oldDepthState->Release();
 	for (auto* rtv : oldRTVs)
 		if (rtv)
 			rtv->Release();
@@ -639,63 +748,48 @@ void FoveatedDebug::DrawToEyeTexture(ID3D11Texture2D* eyeTexture)
 		oldDSV->Release();
 }
 
-void FoveatedDebug::TryInstallCompositorHook()
+//=============================================================================
+// LIFECYCLE
+//=============================================================================
+
+void FoveatedDebug::PostPostLoad()
 {
-	if (compositorHookInstalled)
+	if (!globals::game::isVR)
 		return;
 
-	logger::info("FoveatedDebug: Attempting compositor hook installation...");
-
-	auto* bsOpenVR = RE::BSOpenVR::GetSingleton();
-	if (!bsOpenVR) {
-		logger::warn("FoveatedDebug: BSOpenVR singleton is null");
-		return;
-	}
-
-	logger::info("FoveatedDebug: BSOpenVR found at {}", (void*)bsOpenVR);
-
-	auto* compositor = bsOpenVR->vrContext.vrCompositor;
-	logger::info("FoveatedDebug: vrContext.vrCompositor = {}", (void*)compositor);
-
-	if (!compositor) {
-		// Try the global OpenVR function as fallback
-		compositor = vr::VRCompositor();
-		logger::info("FoveatedDebug: vr::VRCompositor() = {}", (void*)compositor);
-	}
-
-	if (!compositor) {
-		logger::warn("FoveatedDebug: No compositor available");
-		return;
-	}
-
-	// Hook the compositor
-	auto vtable = *reinterpret_cast<void***>(compositor);
-	logger::info("FoveatedDebug: Compositor vtable at {}", (void*)vtable);
-
-	Hooks::IVRCompositor_Submit::func = reinterpret_cast<decltype(Hooks::IVRCompositor_Submit::func)>(vtable[5]);
-	logger::info("FoveatedDebug: Original Submit function at {}", (void*)Hooks::IVRCompositor_Submit::func);
-
-	DWORD oldProtect;
-	if (!VirtualProtect(&vtable[5], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-		logger::error("FoveatedDebug: VirtualProtect failed");
-		return;
-	}
-
-	vtable[5] = reinterpret_cast<void*>(&Hooks::IVRCompositor_Submit::thunk);
-	VirtualProtect(&vtable[5], sizeof(void*), oldProtect, &oldProtect);
-
-	compositorHookInstalled = true;
-	logger::info("FoveatedDebug: Compositor hook installed successfully!");
+	InitializeEyeTracking();
 }
 
-void FoveatedDebug::Hooks::Install()
+void FoveatedDebug::DataLoaded()
 {
-	// Desktop mirror hook (existing)
-	if (globals::d3d::swapChain) {
-		stl::detour_vfunc<8, IDXGISwapChain_Present>(globals::d3d::swapChain);
-		logger::info("FoveatedDebug: Installed Present hook");
-	}
+	Hooks::Install();
+}
 
-	// Try VR compositor hook now, but it may not be available yet
-	globals::features::foveatedDebug.TryInstallCompositorHook();
+void FoveatedDebug::Prepass()
+{
+	if (!settings.EnableDebug || !initialized || !debugPS || !debugVS)
+		return;
+
+	if (!globals::game::isVR)
+		return;
+
+	static bool loggedOnce = false;
+	if (!loggedOnce) {
+		auto renderer = RE::BSGraphics::Renderer::GetSingleton();
+		if (renderer) {
+			logger::info("FoveatedDebug: Checking renderer for VR targets...");
+
+			auto& runtimeData = renderer->GetRuntimeData();
+
+			for (int i = 0; i < RE::RENDER_TARGETS::kVRTOTAL; i++) {
+				auto& rt = runtimeData.renderTargets[i];
+				if (rt.texture) {
+					D3D11_TEXTURE2D_DESC desc;
+					rt.texture->GetDesc(&desc);
+					logger::info("  RT[{}]: {}x{}", i, desc.Width, desc.Height);
+				}
+			}
+		}
+		loggedOnce = true;
+	}
 }
