@@ -609,26 +609,24 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 	auto context = globals::d3d::context;
 	auto device = globals::d3d::device;
 
+	// --- 1. RTV Creation (Standard checks) ---
 	D3D11_TEXTURE2D_DESC desc;
 	texture->GetDesc(&desc);
 
-	// IGNORE DEPTH/SHADOW MAPS
-	if (desc.Format == DXGI_FORMAT_R16_TYPELESS ||
-		desc.Format == DXGI_FORMAT_D16_UNORM ||
-		desc.Format == DXGI_FORMAT_R24G8_TYPELESS ||
-		desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT ||
-		desc.Format == DXGI_FORMAT_R32_TYPELESS ||
-		desc.Format == DXGI_FORMAT_D32_FLOAT) {
+	// Ignore Depth/Typeless formats
+	if (desc.Format == DXGI_FORMAT_R16_TYPELESS || desc.Format == DXGI_FORMAT_D16_UNORM ||
+		desc.Format == DXGI_FORMAT_R24G8_TYPELESS || desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT ||
+		desc.Format == DXGI_FORMAT_R32_TYPELESS || desc.Format == DXGI_FORMAT_D32_FLOAT) {
 		return;
 	}
 
-	// Create RTV
 	winrt::com_ptr<ID3D11RenderTargetView> tempRTV;
 	D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 	rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
 	rtvDesc.Texture2D.MipSlice = 0;
 	rtvDesc.Format = desc.Format;
 
+	// Handle Typeless Color
 	if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS)
 		rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	else if (desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS)
@@ -637,86 +635,110 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 		rtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 	if (FAILED(device->CreateRenderTargetView(texture, &rtvDesc, tempRTV.put()))) {
-		if (FAILED(device->CreateRenderTargetView(texture, nullptr, tempRTV.put()))) {
+		if (FAILED(device->CreateRenderTargetView(texture, nullptr, tempRTV.put())))
 			return;
-		}
 	}
 
 	UpdateEyeGazeData();
-	UpdateConstantBuffers();
+	float originalGazeX = regionData.GazePoint[0];
+	float originalGazeY = regionData.GazePoint[1];
 
-	// --- SAVE STATE ---
+	// --- 2. Save State ---
 	ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
 	ID3D11DepthStencilView* oldDSV = nullptr;
 	context->OMGetRenderTargets(8, oldRTVs, &oldDSV);
-
 	ID3D11RasterizerState* oldRS = nullptr;
 	context->RSGetState(&oldRS);
-
 	ID3D11BlendState* oldBlend = nullptr;
 	float oldBlendFactor[4];
 	UINT oldMask;
 	context->OMGetBlendState(&oldBlend, oldBlendFactor, &oldMask);
-
 	D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
 	UINT numViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
 	context->RSGetViewports(&numViewports, oldViewports);
-
 	ID3D11VertexShader* oldVS = nullptr;
 	ID3D11PixelShader* oldPS = nullptr;
 	context->VSGetShader(&oldVS, nullptr, nullptr);
 	context->PSGetShader(&oldPS, nullptr, nullptr);
-
 	D3D11_PRIMITIVE_TOPOLOGY oldTopology;
 	context->IAGetPrimitiveTopology(&oldTopology);
-
 	ID3D11InputLayout* oldInputLayout = nullptr;
 	context->IAGetInputLayout(&oldInputLayout);
 
-	ID3D11DepthStencilState* oldDepthState = nullptr;
-	UINT oldStencilRef;
-	context->OMGetDepthStencilState(&oldDepthState, &oldStencilRef);
-
-	// --- SETUP RENDERING ---
+	// --- 3. Setup Drawing ---
 	ID3D11RenderTargetView* rtvPtr = tempRTV.get();
 	context->OMSetRenderTargets(1, &rtvPtr, nullptr);
-
 	context->RSSetState(rasterizerState.get());
 	float blendFactor[4] = { 0, 0, 0, 0 };
 	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
 	context->OMSetDepthStencilState(nullptr, 0);
 
-	// Bind Buffers & Shaders
 	auto foveatedCB = foveatedBuffer.get();
 	auto settingsCB = settingsBuffer.get();
 	context->PSSetConstantBuffers(10, 1, &foveatedCB);
 	context->PSSetConstantBuffers(11, 1, &settingsCB);
-
 	context->PSSetShader(debugPS.get(), nullptr, 0);
 	context->VSSetShader(debugVS.get(), nullptr, 0);
-
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	context->IASetInputLayout(nullptr);
 
-	// --- DRAW LEFT EYE ---
-	D3D11_VIEWPORT viewport = {};
-	viewport.Width = static_cast<float>(desc.Width) / 2.0f;  // Half width
-	viewport.Height = static_cast<float>(desc.Height);
-	viewport.MinDepth = 0.0f;
-	viewport.MaxDepth = 1.0f;
-	viewport.TopLeftX = 0.0f;
-	viewport.TopLeftY = 0.0f;
+	// --- 4. Stereo Draw Loop ---
+	float width = static_cast<float>(desc.Width) / 2.0f;
+	float height = static_cast<float>(desc.Height);
 
-	context->RSSetViewports(1, &viewport);
-	context->Draw(3, 0);
+	// Get VR System to query projection
+	auto vrSystem = RE::BSOpenVR::GetIVRSystem();
 
-	// --- DRAW RIGHT EYE ---
-	viewport.TopLeftX = static_cast<float>(desc.Width) / 2.0f;  // Shift to right half
+	for (int eye = 0; eye < 2; ++eye) {
+		float opticalCenterX = 0.5f;
+		float opticalCenterY = 0.5f;
 
-	context->RSSetViewports(1, &viewport);
-	context->Draw(3, 0);
+		// Calculate Optical Center from Projection Raw
+		if (vrSystem) {
+			float l, r, t, b;
+			vrSystem->GetProjectionRaw(static_cast<vr::EVREye>(eye), &l, &r, &t, &b);
 
-	// --- RESTORE STATE ---
+			// The optical center (straight ahead) is at tan(0) = 0.
+			// Total width span = r - l.
+			// Distance from left edge to 0 = 0 - l = -l.
+			// Normalized X = -l / (r - l)
+			opticalCenterX = -l / (r - l);
+
+			// Total height span = t - b. (Note: OpenVR 't' is usually negative for "top" in texture space?
+			// Actually OpenVR Tangents are usually Up=+Y. But let's stick to the standard UV formula)
+			// If we assume standard OpenVR tangents (Up+, Right+):
+			// Center Y (V) is derived from mapping [b, t] to [1, 0] (V flips).
+			// V_center = t / (t - b)  (assuming t is positive up)
+			opticalCenterY = t / (t - b);
+		}
+
+		// Apply fallback gaze (center of vision) using the calculated optical center
+		if (activeAPI == EyeTrackingAPI::Fallback || activeAPI == EyeTrackingAPI::None) {
+			regionData.GazePoint[0] = opticalCenterX;
+			regionData.GazePoint[1] = opticalCenterY;
+		}
+		// Note: If activeAPI == OpenXR, you should theoretically transform the gaze
+		// using these same tangents, but we'll stick to fixing the fallback overlay for now.
+
+		UpdateConstantBuffers();
+
+		D3D11_VIEWPORT viewport = {};
+		viewport.Width = width;
+		viewport.Height = height;
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+		viewport.TopLeftX = (eye == 0) ? 0.0f : width;
+		viewport.TopLeftY = 0.0f;
+
+		context->RSSetViewports(1, &viewport);
+		context->Draw(3, 0);
+	}
+
+	// Restore original gaze
+	regionData.GazePoint[0] = originalGazeX;
+	regionData.GazePoint[1] = originalGazeY;
+
+	// --- 5. Restore State ---
 	context->OMSetRenderTargets(8, oldRTVs, oldDSV);
 	context->RSSetState(oldRS);
 	context->OMSetBlendState(oldBlend, oldBlendFactor, oldMask);
@@ -725,7 +747,6 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 	context->PSSetShader(oldPS, nullptr, 0);
 	context->IASetPrimitiveTopology(oldTopology);
 	context->IASetInputLayout(oldInputLayout);
-	context->OMSetDepthStencilState(oldDepthState, oldStencilRef);
 
 	// Cleanup
 	if (oldRS)
@@ -738,8 +759,6 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 		oldPS->Release();
 	if (oldInputLayout)
 		oldInputLayout->Release();
-	if (oldDepthState)
-		oldDepthState->Release();
 	for (auto* rtv : oldRTVs)
 		if (rtv)
 			rtv->Release();
