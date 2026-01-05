@@ -612,8 +612,7 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 	D3D11_TEXTURE2D_DESC desc;
 	texture->GetDesc(&desc);
 
-	// IGNORE DEPTH/SHADOW MAPS (Format 53 = R16_TYPELESS)
-	// This prevents the error: "Failed to create RTV for texture format 53"
+	// IGNORE DEPTH/SHADOW MAPS
 	if (desc.Format == DXGI_FORMAT_R16_TYPELESS ||
 		desc.Format == DXGI_FORMAT_D16_UNORM ||
 		desc.Format == DXGI_FORMAT_R24G8_TYPELESS ||
@@ -623,15 +622,13 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 		return;
 	}
 
-	// Create a temporary RTV for this texture
+	// Create RTV
 	winrt::com_ptr<ID3D11RenderTargetView> tempRTV;
 	D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 	rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
 	rtvDesc.Texture2D.MipSlice = 0;
 	rtvDesc.Format = desc.Format;
 
-	// HANDLE TYPELESS COLOR FORMATS
-	// If the game uses a typeless color buffer, we must cast it to a typed format to draw on it.
 	if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS)
 		rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	else if (desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS)
@@ -640,13 +637,7 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 		rtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 	if (FAILED(device->CreateRenderTargetView(texture, &rtvDesc, tempRTV.put()))) {
-		// Fallback to default (might fail if typeless)
 		if (FAILED(device->CreateRenderTargetView(texture, nullptr, tempRTV.put()))) {
-			static bool loggedError = false;
-			if (!loggedError) {
-				logger::warn("FoveatedDebug: Failed to create RTV for texture format {}", (int)desc.Format);
-				loggedError = true;
-			}
 			return;
 		}
 	}
@@ -654,7 +645,7 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 	UpdateEyeGazeData();
 	UpdateConstantBuffers();
 
-	// Save ALL state
+	// --- SAVE STATE ---
 	ID3D11RenderTargetView* oldRTVs[8] = { nullptr };
 	ID3D11DepthStencilView* oldDSV = nullptr;
 	context->OMGetRenderTargets(8, oldRTVs, &oldDSV);
@@ -686,14 +677,7 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 	UINT oldStencilRef;
 	context->OMGetDepthStencilState(&oldDepthState, &oldStencilRef);
 
-	// Set up our rendering
-	D3D11_VIEWPORT viewport = {};
-	viewport.Width = static_cast<float>(desc.Width);
-	viewport.Height = static_cast<float>(desc.Height);
-	viewport.MinDepth = 0.0f;
-	viewport.MaxDepth = 1.0f;
-	context->RSSetViewports(1, &viewport);
-
+	// --- SETUP RENDERING ---
 	ID3D11RenderTargetView* rtvPtr = tempRTV.get();
 	context->OMSetRenderTargets(1, &rtvPtr, nullptr);
 
@@ -702,7 +686,7 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 	context->OMSetBlendState(blendState.get(), blendFactor, 0xFFFFFFFF);
 	context->OMSetDepthStencilState(nullptr, 0);
 
-	// Bind shaders
+	// Bind Buffers & Shaders
 	auto foveatedCB = foveatedBuffer.get();
 	auto settingsCB = settingsBuffer.get();
 	context->PSSetConstantBuffers(10, 1, &foveatedCB);
@@ -714,10 +698,25 @@ void FoveatedDebug::DrawOverlayToTexture(ID3D11Texture2D* texture)
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	context->IASetInputLayout(nullptr);
 
-	// Draw
+	// --- DRAW LEFT EYE ---
+	D3D11_VIEWPORT viewport = {};
+	viewport.Width = static_cast<float>(desc.Width) / 2.0f;  // Half width
+	viewport.Height = static_cast<float>(desc.Height);
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
+	viewport.TopLeftX = 0.0f;
+	viewport.TopLeftY = 0.0f;
+
+	context->RSSetViewports(1, &viewport);
 	context->Draw(3, 0);
 
-	// Restore ALL state
+	// --- DRAW RIGHT EYE ---
+	viewport.TopLeftX = static_cast<float>(desc.Width) / 2.0f;  // Shift to right half
+
+	context->RSSetViewports(1, &viewport);
+	context->Draw(3, 0);
+
+	// --- RESTORE STATE ---
 	context->OMSetRenderTargets(8, oldRTVs, oldDSV);
 	context->RSSetState(oldRS);
 	context->OMSetBlendState(oldBlend, oldBlendFactor, oldMask);
